@@ -1,0 +1,285 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --base: 27 24 21; /* #1b1815 */
+  --panel: 38 34 30;
+  --panel2: 49 43 37;
+  --line: 74 64 56;
+  --ink: 244 244 242; /* #f4f4f2 */
+  --dim: 168 160 150;
+  --office: 74 144 226; /* #4a90e2 */
+  --memo: 245 230 99; /* #f5e663 */
+  --stamp: 230 57 70; /* #e63946 */
+  --ok: 123 211 137; /* #7bd389 */
+  color-scheme: dark;
+}
+html.light {
+  --base: 236 230 216;
+  --panel: 250 246 236;
+  --panel2: 228 220 204;
+  --line: 160 148 130;
+  --ink: 27 24 21;
+  --dim: 100 92 84;
+  --office: 46 110 190;
+  --memo: 200 170 20;
+  --stamp: 200 40 52;
+  --ok: 46 140 70;
+  color-scheme: light;
+}
+
+html,
+body {
+  background: rgb(var(--base));
+  color: rgb(var(--ink));
+}
+body {
+  font-family: "VT323", monospace;
+  font-size: 20px;
+  line-height: 1.15;
+  -webkit-font-smoothing: none;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  overflow-x: hidden;
+}
+canvas,
+img,
+.pixelated {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+::selection {
+  background: rgb(var(--memo));
+  color: #1b1815;
+}
+
+@layer components {
+  .h-pixel {
+    font-family: "Press Start 2P", monospace;
+    letter-spacing: 0.02em;
+    line-height: 1.5;
+  }
+  /* stepped "pixel" border */
+  .px-box {
+    background: rgb(var(--panel));
+    box-shadow:
+      0 -4px 0 0 rgb(var(--line)),
+      0 4px 0 0 rgb(var(--line)),
+      -4px 0 0 0 rgb(var(--line)),
+      4px 0 0 0 rgb(var(--line));
+    margin: 4px;
+  }
+  .px-btn {
+    @apply h-pixel inline-flex items-center justify-center gap-2 px-4 py-3 text-[10px] uppercase select-none;
+    background: rgb(var(--office));
+    color: #fff;
+    box-shadow:
+      0 -4px 0 0 #1b1815,
+      0 4px 0 0 #1b1815,
+      -4px 0 0 0 #1b1815,
+      4px 0 0 0 #1b1815,
+      inset -4px -4px 0 0 rgba(0, 0, 0, 0.3),
+      inset 4px 4px 0 0 rgba(255, 255, 255, 0.25);
+    margin: 4px;
+    transition: transform 60ms steps(2);
+  }
+  .px-btn:hover {
+    filter: brightness(1.1);
+  }
+  .px-btn:active {
+    transform: translateY(2px);
+    box-shadow:
+      0 -4px 0 0 #1b1815,
+      0 4px 0 0 #1b1815,
+      -4px 0 0 0 #1b1815,
+      4px 0 0 0 #1b1815,
+      inset 4px 4px 0 0 rgba(0, 0, 0, 0.3);
+  }
+  .px-btn:disabled {
+    filter: grayscale(1) brightness(0.7);
+    cursor: not-allowed;
+  }
+  .px-btn.memo {
+    background: #f5e663;
+    color: #1b1815;
+  }
+  .px-btn.stamp {
+    background: #e63946;
+  }
+  .px-btn.ok {
+    background: #7bd389;
+    color: #1b1815;
+  }
+  .px-btn.ghost {
+    background: rgb(var(--panel2));
+    color: rgb(var(--ink));
+  }
+  .tag {
+    @apply h-pixel inline-block px-2 py-1 text-[8px] uppercase;
+    background: rgb(var(--panel2));
+    color: rgb(var(--ink));
+  }
+  .memo-card {
+    background: #f5e663;
+    color: #1b1815;
+    box-shadow:
+      0 -4px 0 0 #1b1815,
+      0 4px 0 0 #1b1815,
+      -4px 0 0 0 #1b1815,
+      4px 0 0 0 #1b1815,
+      8px 8px 0 0 rgba(0, 0, 0, 0.35);
+    margin: 4px;
+    background-image: repeating-linear-gradient(to bottom, transparent 0 27px, rgba(27, 24, 21, 0.12) 27px 28px);
+  }
+  .stamp-mark {
+    @apply h-pixel inline-block px-2 py-1 text-[10px] uppercase;
+    color: #e63946;
+    border: 4px solid #e63946;
+    transform: rotate(-8deg);
+  }
+  .stamp-mark.ok {
+    color: #2e8c46;
+    border-color: #2e8c46;
+  }
+  .bar {
+    height: 14px;
+    background: rgb(var(--panel2));
+    box-shadow: inset 0 0 0 2px rgb(var(--line));
+  }
+  .bar > span {
+    display: block;
+    height: 100%;
+    transition: width 400ms steps(8);
+  }
+  .link {
+    @apply underline decoration-dotted underline-offset-4 hover:text-memo;
+  }
+}
+
+/* ticker marquee */
+.ticker-track {
+  display: inline-flex;
+  gap: 3rem;
+  white-space: nowrap;
+  animation: ticker 60s linear infinite;
+}
+.ticker:hover .ticker-track {
+  animation-play-state: paused;
+}
+@keyframes ticker {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+/* odometer digit */
+.odo {
+  display: inline-flex;
+}
+.odo-digit {
+  display: inline-block;
+  height: 1em;
+  overflow: hidden;
+  line-height: 1em;
+  background: #0e0c0a;
+  color: #f5e663;
+  margin-right: 2px;
+  padding: 0 1px;
+  box-shadow: inset 0 -3px 0 rgba(255, 255, 255, 0.06);
+}
+.odo-digit > span {
+  display: flex;
+  flex-direction: column;
+  transition: transform 700ms steps(10);
+}
+
+/* office overlay stamps */
+.ov-stamp {
+  position: absolute;
+  pointer-events: none;
+  transform: translate(-50%, -100%) rotate(-10deg) scale(1);
+  animation: stampin 260ms steps(4);
+  white-space: nowrap;
+}
+@keyframes stampin {
+  from {
+    transform: translate(-50%, -100%) rotate(-10deg) scale(2.4);
+    opacity: 0;
+  }
+  to {
+    transform: translate(-50%, -100%) rotate(-10deg) scale(1);
+    opacity: 1;
+  }
+}
+.ov-tip {
+  position: absolute;
+  pointer-events: none;
+  transform: translate(-50%, -100%);
+  white-space: nowrap;
+}
+
+.blink {
+  animation: blink 1s steps(2) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+.shake {
+  animation: shake 0.3s steps(3) 3;
+}
+@keyframes shake {
+  0%,
+  100% {
+    transform: rotate(0);
+  }
+  33% {
+    transform: rotate(-12deg);
+  }
+  66% {
+    transform: rotate(12deg);
+  }
+}
+
+/* wallet-adapter button restyle */
+.wallet-adapter-button {
+  font-family: "Press Start 2P", monospace !important;
+  font-size: 9px !important;
+  height: 36px !important;
+  padding: 0 12px !important;
+  border-radius: 0 !important;
+  background: #7bd389 !important;
+  color: #1b1815 !important;
+  box-shadow:
+    0 -3px 0 0 #1b1815,
+    0 3px 0 0 #1b1815,
+    -3px 0 0 0 #1b1815,
+    3px 0 0 0 #1b1815;
+}
+.wallet-adapter-button-start-icon img {
+  width: 16px;
+  height: 16px;
+}
+.wallet-adapter-modal-wrapper {
+  border-radius: 0 !important;
+  font-family: "VT323", monospace;
+  background: #26221e !important;
+}
+.wallet-adapter-modal-title {
+  font-family: "Press Start 2P", monospace;
+  font-size: 14px !important;
+}
+.wallet-adapter-modal-list .wallet-adapter-button {
+  background: transparent !important;
+  color: #f4f4f2 !important;
+  box-shadow: none;
+  font-size: 10px !important;
+}
+.wallet-adapter-dropdown-list {
+  border-radius: 0 !important;
+  font-family: "Press Start 2P", monospace;
+}
