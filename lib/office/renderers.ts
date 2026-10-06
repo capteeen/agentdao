@@ -16,11 +16,17 @@ export interface OfficeRenderer {
   setZoom(z: number): void;
   /** Camera target: a world point and an extra zoom multiplier (1 = full floor). */
   setView(cx: number, cz: number, mul: number): void;
+  /** Night (default) vs day lighting. */
+  setNight(night: boolean): void;
   dispose(): void;
   kind: "3d" | "2d";
 }
 
-const PIXEL = 3; // CSS px per rendered pixel (chunky)
+const PIXEL = 3; // CSS px per rendered pixel (chunky); scaled by canvas width, see pixelFor()
+/** Bigger canvases get finer pixels; a phone stays at 1 so desks remain legible. */
+export const pixelFor = (w: number) => Math.max(1, Math.min(3, Math.round(w / 460)));
+const OUTLINE = 0.05; // inverted-hull outline thickness (world units)
+const thin = (b: Box) => b.w < 0.12 || b.h < 0.12 || b.d < 0.12;
 
 // -------------------------------------------------------------- Three.js
 
@@ -53,7 +59,7 @@ class BoxBatch {
     this.scene.add(m);
     return m;
   }
-  write(boxes: Box[]) {
+  write(boxes: Box[], inflate = 0) {
     if (boxes.length > this.cap) {
       this.scene.remove(this.mesh);
       this.mesh.dispose();
@@ -65,20 +71,20 @@ class BoxBatch {
     for (let i = 0; i < boxes.length; i++) {
       const b = boxes[i];
       const o = i * 16;
-      M[o] = b.w;
+      M[o] = b.w + inflate;
       M[o + 1] = 0;
       M[o + 2] = 0;
       M[o + 3] = 0;
       M[o + 4] = 0;
-      M[o + 5] = b.h;
+      M[o + 5] = b.h + inflate;
       M[o + 6] = 0;
       M[o + 7] = 0;
       M[o + 8] = 0;
       M[o + 9] = 0;
-      M[o + 10] = b.d;
+      M[o + 10] = b.d + inflate;
       M[o + 11] = 0;
       M[o + 12] = b.x;
-      M[o + 13] = b.y;
+      M[o + 13] = b.y - inflate / 2;
       M[o + 14] = b.z;
       M[o + 15] = 1;
       const c = col(b.c);
@@ -104,11 +110,22 @@ export class ThreeOffice implements OfficeRenderer {
   geo = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
   solid: THREE.MeshLambertMaterial;
   glassMat: THREE.MeshLambertMaterial;
+  glowMat: THREE.MeshBasicMaterial;
+  shadowMat: THREE.MeshBasicMaterial;
+  outlineMat: THREE.MeshBasicMaterial;
   stat: BoxBatch;
   statGlass: BoxBatch;
+  statGlow: BoxBatch;
+  statOutline: BoxBatch;
   dyn: BoxBatch;
   dynGlass: BoxBatch;
+  dynGlow: BoxBatch;
+  dynShadow: BoxBatch;
+  dynOutline: BoxBatch;
+  hemi: THREE.HemisphereLight;
+  sun: THREE.DirectionalLight;
   bounds = { w: 20, d: 20 };
+  pixel = PIXEL;
   yaw = 0;
   w = 1;
   h = 1;
@@ -116,27 +133,64 @@ export class ThreeOffice implements OfficeRenderer {
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true, powerPreference: "low-power" });
     this.renderer.setClearColor(0x000000, 0);
-    this.solid = new THREE.MeshLambertMaterial({ vertexColors: false, flatShading: true });
+    this.solid = new THREE.MeshLambertMaterial({ flatShading: true });
     this.glassMat = new THREE.MeshLambertMaterial({ transparent: true, opacity: 0.32, depthWrite: false });
-    this.scene.add(new THREE.HemisphereLight(0xfff4e0, 0x2a2018, 1.6));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.9);
-    sun.position.set(6, 14, 9);
-    this.scene.add(sun);
+    this.glowMat = new THREE.MeshBasicMaterial(); // unlit: screens, lamps, neon
+    this.shadowMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.32, depthWrite: false });
+    // Inverted-hull toon outline: inflated boxes, back faces only, drawn dark.
+    this.outlineMat = new THREE.MeshBasicMaterial({ color: 0x100e0b, side: THREE.BackSide });
+    this.hemi = new THREE.HemisphereLight(0xfff4e0, 0x2a2018, 1.6);
+    this.scene.add(this.hemi);
+    this.sun = new THREE.DirectionalLight(0xffffff, 1.9);
+    this.sun.position.set(6, 14, 9);
+    this.scene.add(this.sun);
+    this.statOutline = new BoxBatch(this.scene, this.outlineMat, this.geo, 512);
     this.stat = new BoxBatch(this.scene, this.solid, this.geo, 512);
+    this.statGlow = new BoxBatch(this.scene, this.glowMat, this.geo, 64);
     this.statGlass = new BoxBatch(this.scene, this.glassMat, this.geo, 32);
+    this.dynOutline = new BoxBatch(this.scene, this.outlineMat, this.geo, 2048);
     this.dyn = new BoxBatch(this.scene, this.solid, this.geo, 2048);
+    this.dynGlow = new BoxBatch(this.scene, this.glowMat, this.geo, 256);
+    this.dynShadow = new BoxBatch(this.scene, this.shadowMat, this.geo, 256);
     this.dynGlass = new BoxBatch(this.scene, this.glassMat, this.geo, 32);
+    this.dynShadow.mesh.renderOrder = 1;
+    this.dynGlass.mesh.renderOrder = 2;
+    this.statGlass.mesh.renderOrder = 2;
+  }
+
+  setNight(night: boolean) {
+    if (night) {
+      this.hemi.color.set(0xd9d2ff);
+      this.hemi.groundColor.set(0x1a1410);
+      this.hemi.intensity = 1.15;
+      this.sun.color.set(0xffe9b8);
+      this.sun.intensity = 1.5;
+      this.renderer.setClearColor(0x000000, 0);
+    } else {
+      this.hemi.color.set(0xfff8ea);
+      this.hemi.groundColor.set(0x6b5a48);
+      this.hemi.intensity = 1.9;
+      this.sun.color.set(0xffffff);
+      this.sun.intensity = 2.1;
+    }
   }
 
   setStatic(boxes: Box[], bounds: { w: number; d: number }) {
-    this.stat.write(boxes.filter((b) => !b.glass));
+    const solid = boxes.filter((b) => !b.glass && !b.glow && !b.shadow);
+    this.stat.write(solid);
+    this.statOutline.write(solid.filter((b) => !b.noOutline && !thin(b)), OUTLINE);
+    this.statGlow.write(boxes.filter((b) => b.glow));
     this.statGlass.write(boxes.filter((b) => b.glass));
     this.bounds = bounds;
     this.fit();
   }
 
   frame(boxes: Box[]) {
-    this.dyn.write(boxes.filter((b) => !b.glass));
+    const solid = boxes.filter((b) => !b.glass && !b.glow && !b.shadow);
+    this.dyn.write(solid);
+    this.dynOutline.write(solid.filter((b) => !b.noOutline && !thin(b)), OUTLINE);
+    this.dynGlow.write(boxes.filter((b) => b.glow));
+    this.dynShadow.write(boxes.filter((b) => b.shadow));
     this.dynGlass.write(boxes.filter((b) => b.glass));
     this.renderer.render(this.scene, this.camera);
   }
@@ -160,7 +214,8 @@ export class ThreeOffice implements OfficeRenderer {
   resize(w: number, h: number) {
     this.w = Math.max(1, w);
     this.h = Math.max(1, h);
-    this.renderer.setPixelRatio(1 / PIXEL);
+    this.pixel = pixelFor(this.w);
+    this.renderer.setPixelRatio(1 / this.pixel);
     this.renderer.setSize(this.w, this.h, true);
     this.fit();
   }
@@ -221,10 +276,13 @@ export class ThreeOffice implements OfficeRenderer {
   }
 
   dispose() {
-    [this.stat, this.statGlass, this.dyn, this.dynGlass].forEach((b) => b.dispose());
+    [this.stat, this.statGlass, this.statGlow, this.statOutline, this.dyn, this.dynGlass, this.dynGlow, this.dynShadow, this.dynOutline].forEach((b) => b.dispose());
     this.geo.dispose();
     this.solid.dispose();
     this.glassMat.dispose();
+    this.glowMat.dispose();
+    this.shadowMat.dispose();
+    this.outlineMat.dispose();
     this.renderer.dispose();
   }
 }
@@ -252,13 +310,17 @@ export class IsoOffice implements OfficeRenderer {
   lh = 1;
   yaw = 0;
 
+  night = true;
   constructor(
     private canvas: HTMLCanvasElement,
-    private pixel = PIXEL,
+    private pixel?: number,
   ) {
     this.ctx = canvas.getContext("2d")!;
   }
   setYaw() {}
+  setNight(n: boolean) {
+    this.night = n;
+  }
   zoom = 1;
   setZoom(z: number) {
     this.zoom = z;
@@ -277,8 +339,9 @@ export class IsoOffice implements OfficeRenderer {
   resize(w: number, h: number) {
     this.w = w;
     this.h = h;
-    this.lw = Math.max(1, Math.round(w / this.pixel));
-    this.lh = Math.max(1, Math.round(h / this.pixel));
+    const px = this.pixel ?? pixelFor(w);
+    this.lw = Math.max(1, Math.round(w / px));
+    this.lh = Math.max(1, Math.round(h / px));
     this.canvas.width = this.lw;
     this.canvas.height = this.lh;
     this.canvas.style.width = w + "px";
@@ -321,17 +384,24 @@ export class IsoOffice implements OfficeRenderer {
         z1 = b.z + b.d / 2,
         y0 = b.y,
         y1 = b.y + b.h;
+      if (b.shadow) {
+        ctx.globalAlpha = 0.32;
+        this.poly([this.p(x0, y0, z0), this.p(x1, y0, z0), this.p(x1, y0, z1), this.p(x0, y0, z1)], "#000");
+        continue;
+      }
       ctx.globalAlpha = b.glass ? 0.3 : 1;
+      const lit = b.glow ? 1 : this.night ? 1 : 1.08;
+      const stroke = !b.noOutline && !thin(b);
       // top
-      this.poly([this.p(x0, y1, z0), this.p(x1, y1, z0), this.p(x1, y1, z1), this.p(x0, y1, z1)], shade(b.c, 1.1));
+      this.poly([this.p(x0, y1, z0), this.p(x1, y1, z0), this.p(x1, y1, z1), this.p(x0, y1, z1)], shade(b.c, b.glow ? 1 : 1.1 * lit), stroke);
       // +z face (left on screen)
-      this.poly([this.p(x0, y0, z1), this.p(x1, y0, z1), this.p(x1, y1, z1), this.p(x0, y1, z1)], shade(b.c, 0.8));
+      this.poly([this.p(x0, y0, z1), this.p(x1, y0, z1), this.p(x1, y1, z1), this.p(x0, y1, z1)], shade(b.c, b.glow ? 0.95 : 0.8 * lit), stroke);
       // +x face (right on screen)
-      this.poly([this.p(x1, y0, z0), this.p(x1, y0, z1), this.p(x1, y1, z1), this.p(x1, y1, z0)], shade(b.c, 0.62));
+      this.poly([this.p(x1, y0, z0), this.p(x1, y0, z1), this.p(x1, y1, z1), this.p(x1, y1, z0)], shade(b.c, b.glow ? 0.9 : 0.62 * lit), stroke);
     }
     ctx.globalAlpha = 1;
   }
-  private poly(pts: [number, number][], fill: string) {
+  private poly(pts: [number, number][], fill: string, stroke = false) {
     const ctx = this.ctx;
     ctx.beginPath();
     ctx.moveTo(pts[0][0], pts[0][1]);
@@ -339,6 +409,11 @@ export class IsoOffice implements OfficeRenderer {
     ctx.closePath();
     ctx.fillStyle = fill;
     ctx.fill();
+    if (stroke) {
+      ctx.strokeStyle = "#100e0b";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
   }
   dispose() {}
 }

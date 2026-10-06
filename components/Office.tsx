@@ -100,11 +100,13 @@ export default function Office({ height = "60vh", filter, interactive = true, zo
         .filter((a) => a.status === "working" || a.status === "idle" || (a.firedAt && now - a.firedAt < 9000))
         .map((a) => a.id)
         .join(",");
-      const key = ids + "|" + topId;
+      const night = s.prefs.theme === "dark";
+      const key = ids + "|" + topId + "|" + night;
       if (key !== layoutKey || !layout) {
         layoutKey = key;
         layout = computeLayout(agents, topId, now);
-        r.setStatic(staticBoxes(layout), { w: layout.width, d: layout.depth });
+        r.setNight(night);
+        r.setStatic(staticBoxes(layout, night), { w: layout.width, d: layout.depth });
       }
       const liveVotes = votesArray(s.votes).filter((v) => v.status === "live");
       const memos: Memo[] = [];
@@ -135,11 +137,25 @@ export default function Office({ height = "60vh", filter, interactive = true, zo
       const fk = f ? f.agentId + f.at : "";
       if (fk !== focusKey) focusKey = fk;
 
-      const boxes: Box[] = dynamicBoxes(layout, { agents, liveVotes, memos, topId, now, t, hoverId: hover, reportDrop });
+      const boxes: Box[] = dynamicBoxes(layout, { agents, liveVotes, memos, topId, now, t, hoverId: hover, reportDrop, night });
       r.frame(boxes);
 
       // DOM overlays
       let n = 0;
+      {
+        // whiteboard: days since last firing (hours in the mock, it never gets far)
+        const lastFire = Math.max(0, ...agents.map((a) => a.firedAt ?? 0));
+        const since = lastFire ? now - lastFire : 0;
+        const label = !lastFire ? "∞" : since < 3_600_000 ? `${Math.floor(since / 60_000)}m` : since < 86_400_000 ? `${Math.floor(since / 3_600_000)}h` : `${Math.floor(since / 86_400_000)}d`;
+        const p = r.project(layout.whiteboard.x, layout.whiteboard.y + 0.25, layout.whiteboard.z + 0.2);
+        const d = getEl(n++);
+        d.className = "ov-board";
+        d.style.left = p.x + "px";
+        d.style.top = p.y + "px";
+        d.style.display = "block";
+        d.style.fontSize = Math.max(6, 7 * cam.mul * userZoom) + "px";
+        d.innerHTML = `<span>SINCE LAST<br/>FIRING</span><b>${label}</b>`;
+      }
       for (const m of memos) {
         const age = now - m.at;
         const slot = layout.slots.get(m.agentId);
@@ -344,6 +360,7 @@ export default function Office({ height = "60vh", filter, interactive = true, zo
   return (
     <div ref={wrap} className="relative w-full touch-none select-none overflow-hidden" style={{ height }}>
       <canvas ref={canvas} className="absolute inset-0 h-full w-full" />
+      <div className="office-fx pointer-events-none absolute inset-0" />
       <div ref={overlay} className="pointer-events-none absolute inset-0" />
       {hoverAgent && (
         <div ref={tip} className="pointer-events-none absolute left-0 top-0 z-10 w-[230px] will-change-transform">
@@ -390,10 +407,13 @@ export function DeskSprite({ agent, size = 160 }: { agent: Agent; size?: number 
       boardroom: { x: -30, z: -30 },
       door: { x: 6, z: -2 },
       corner: { x: 99, z: 99 },
+      whiteboard: { x: 99, y: 0, z: 99 },
+      rug: { x: 99, z: 99, w: 1, d: 1 },
     };
     const floor: Box[] = [];
     for (let x = -2; x < 2; x += 1) for (let z = -2; z < 2; z += 1) floor.push({ x: x + 0.5, y: -0.2, z: z + 0.5, w: 1, h: 0.2, d: 1, c: (x + z) & 1 ? 0x2a2520 : 0x312b25 });
     r.setStatic(floor, { w: 4, d: 4 });
+    r.setNight(true);
     let raf = 0;
     const t0 = performance.now();
     const loop = () => {
@@ -405,7 +425,7 @@ export function DeskSprite({ agent, size = 160 }: { agent: Agent; size?: number 
       const now = Date.now();
       // fired agents: show the cleared desk + box (frozen at start of walk)
       const shown = a.status === "fired" || a.status === "bankrupt" ? { ...a, firedAt: now - 600, liquidated: 0 } : a;
-      r.frame(dynamicBoxes(layout, { agents: [shown], liveVotes: [], memos: [], topId: top, now, t: (performance.now() - t0) / 1000 }));
+      r.frame(dynamicBoxes(layout, { agents: [shown], liveVotes: [], memos: [], topId: top, now, t: (performance.now() - t0) / 1000, night: true }));
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
