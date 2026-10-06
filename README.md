@@ -110,41 +110,83 @@ and merges by id (see `lib/backend/live.ts`).
 `lib/sim.test.ts` pins the invariants that are the whole brand: a passed vote rewrites the rule, links the vote,
 executes one slot after close and forces a trade citing that vote; no quorum → no change; fire → vault 0 and payout.
 
-## Swapping the simulator for the Phase 2 backend
+## Phase 2: the real backend
 
-The UI never touches the simulator directly. Everything goes through one seam:
+The same UI runs against a real server. Flip `NEXT_PUBLIC_BOSS_BACKEND=live` and the client reads an SSE
+stream instead of the in-browser simulator; votes, proposals, ratings and hires become signed requests.
 
 ```
-lib/backend/types.ts   BossBackend { start, holdings, vote, propose, hire }
-lib/backend/sim.ts     Phase 1 (default)
-lib/backend/live.ts    Phase 2 client (stub): SSE + POSTs to /api/*
-lib/backend/index.ts   picks one via NEXT_PUBLIC_BOSS_BACKEND=sim|live
-lib/store.ts           Zustand store the UI reads; both backends write it via mutate()/setState
+                    ┌──────────────┐   SSE /api/stream (snapshot + id-keyed patches)
+   browser  ◀───────┤  Next.js API │◀──┐
+   (signs ballots,  │  app/api/*   │   │  SQLite (data/boss.sqlite)
+    txs, ratings)   └──────┬───────┘   │
+            POST /api/*    │ writes     │ reads/writes
+                           ▼           │
+                    ┌──────────────┐    │     PumpPortal data feed (or synthetic tape)
+                    │   worker     │────┘ ◀── new launches · trades · wallet trades
+                    │ server/worker│──────▶ Solana RPC: holder snapshots, bonding curves, balances
+                    └──────────────┘──────▶ PumpPortal trade-local: buy / sell / create / collectCreatorFee
 ```
 
-To go live:
+```bash
+cp .env.example .env            # set BOSS_MODE, SOLANA_RPC, keys
+npm run seed                    # optional: 25 demo agents (paper mode)
+npm run worker                  # the agent loop (one process)
+NEXT_PUBLIC_BOSS_BACKEND=live npm run dev   # or build + start
+```
 
-1. **Set `NEXT_PUBLIC_BOSS_BACKEND=live`** (and `NEXT_PUBLIC_SOLANA_RPC`, `NEXT_PUBLIC_SITE_URL`).
-2. **Persist the world** (Postgres or similar) with the same shapes as `lib/types.ts`, and serve it from
-   `app/api/stream/route.ts` as SSE: one `{type:"snapshot", world}` message, then `{type:"patch", world}` where
-   `world.agents` / `world.votes` are id-keyed partial maps and `world.trades` / `events` / `reports` are the new rows.
-3. **Hire** in `app/api/hire/route.ts` and `lib/phase2/pumpportal.ts`: create a per-agent keypair
-   (`lib/phase2/keypairs.ts`, server-only, encrypted at rest). Upload the metadata to pump.fun IPFS, build the
-   PumpPortal `trade-local` `create` tx, have the user sign the funding part, then submit. Store the mint as `coinCa`.
-4. **Holder snapshots**: `lib/phase2/holders.ts` uses DAS `getTokenAccounts` pagination for full snapshots,
-   or `getTokenLargestAccounts` for a quick top-20 view. Take the snapshot when a vote opens. Voting weight is
-   the balance in that snapshot.
-5. **Votes**: `lib/phase2/votes.ts` handles off-chain ballots. The wallet signs `BOSS vote <voteId> <option>`, the
-   server verifies ed25519 and weights the ballot by the snapshot. On close, the executor writes the winner into the rule set and
-   records `executedSlot` and `txSig`. Proposal fees are a SOL transfer to the vault, verified before the vote opens.
-6. **Strategies**: `lib/phase2/engine.ts` holds deterministic rule engines, `(market, rules, vault) => intents`, and
-   no LLM makes decisions. The executor signs the PumpPortal buy/sell txs with the agent key. `lib/phase2/explain.ts`
-   uses an LLM only to write the one-line reason from the intent's structured `why`.
-7. **Fees and firing**: `lib/phase2/payouts.ts` claims creator fees, keeps `salaryPct` in the vault and pays the rest
-   pro-rata to holders (or a merkle claim, for `/me`). Fire means sell everything and distribute the vault.
-8. **OG and metadata**: replace the seeded `createWorld(1337)` lookup in `app/agent/[id]/page.tsx` with a DB read.
+### Modes
 
-Every `app/api/*` route other than OG is currently a stub that returns `501`.
+| `BOSS_MODE` | What is real | What is simulated |
+| --- | --- | --- |
+| `paper` (default) | Governance (snapshots, ed25519 ballots, quorum, execution timing), the rule engines, market data from PumpPortal, PnL maths, payouts ledger | Fills (at the last traded price with pump.fun's 1% fee and a slippage model), coin launches (synthetic mints), creator fees (accrue per observed buy of an agent's launch). A synthetic board of ~30 holders votes so quorum is reachable; demo wallets may self-declare a capped stake. |
+| `live` | Everything: agent keypairs (AES-256-GCM at rest, `BOSS_KEY_ENCRYPTION_KEY`), pump.fun creates via PumpPortal with the agent as creator, buys/sells signed by the agent, holder snapshots via `getProgramAccounts`, proposal fees verified on-chain, creator-fee claims, batched SOL payouts, vault reconciled from the wallet balance | nothing |
+
+`BOSS_MARKET=synthetic` replaces the PumpPortal websocket with an offline tape (launches, momentum bursts, rugs)
+so the whole stack runs in CI or a sandbox without network access.
+
+### What happens where
+
+| Piece | File | Notes |
+| --- | --- | --- |
+| World persistence | `server/db.ts` | agents/votes as JSON docs by id, append-only trades/events/reports, positions, snapshots, ballots, ratings, keys, payouts, and a change log that drives the SSE patches |
+| Solana primitives | `server/solana.ts` | keypair encryption, `BOSS vote <id> <option>` signature checks, holder snapshots (token program `getProgramAccounts`, no DAS needed), bonding-curve decode + constant-product quotes, fee-transfer verification |
+| PumpPortal | `server/pumpportal.ts` | trade-local tx building (buy/sell/create/collectCreatorFee), IPFS metadata, data websocket with reconnect |
+| Market view | `server/market.ts` | 5-minute movers, fresh launches with dev %, copy-trade signals, position marks + peak (trailing exit for "never" take-profit); the synthetic tape |
+| Rule engines | `lib/phase2/engine.ts` | pure `(market, rules, vault) → intents`; per-risk stop-losses (Intern -20% … Degen -80%) |
+| Execution | `server/executor.ts` | paper fills vs live PumpPortal; identical `Trade` rows either way, each naming its rule and the vote that set it |
+| Explanations | `server/explain.ts` | Claude (`claude-opus-5-5`, low effort, server-side fallbacks) phrases the structured intent in one line; template fallback. `BOSS_EXPLAIN=0` disables |
+| Governance | `server/governance.ts` | proposals take a snapshot at open; ballots verified + weighted + deduped; `tally()` applies quorum and computes the new rule set |
+| Worker | `server/worker.ts` | every tick: slot · close due votes · obey fresh orders (`nextTradeAt`) · evaluate engines · cadence launches · bankruptcy; periodic: fee claims + holder payouts, daily report cards, gossip, vault reconciliation |
+| Payouts | `server/payouts.ts` | salary split, pro-rata distribution to the snapshot (18 transfers per tx), liquidation on fire |
+| Hiring | `server/hire.ts` | paper: agent + wallet at once; live: pending agent + a create tx the user signs, then `/api/hire/confirm` |
+| Client | `lib/backend/live.ts`, `lib/backend/signer.ts` | SSE merge by id; wallet adapter or a local demo keypair signs messages/txs |
+
+### API
+
+`GET /api/stream` (SSE) · `GET /api/world` · `GET /api/health` · `POST /api/holdings {wallet}` ·
+`POST /api/vote {voteId, option, wallet, signature}` · `POST /api/propose {agentId, field, wallet, reason, signature | feeTx}` ·
+`POST /api/rate {reportId, up, wallet, signature}` · `POST /api/hire {…}` · `POST /api/hire/confirm {id, signature}` · `POST /api/me {wallet}`
+
+### Going live: checklist
+
+1. `openssl rand -hex 32` → `BOSS_KEY_ENCRYPTION_KEY`. Back it up; it is the only way to sign for the agents.
+2. A paid RPC (`SOLANA_RPC`); `getProgramAccounts` on the token program is heavy on public endpoints.
+3. `BOSS_MODE=live`, `BOSS_MARKET=pumpportal`. Fund each agent wallet with its starting vault after hiring (the hire tx only creates the coin; the worker reconciles the vault from the balance).
+4. Run the worker as a single supervised process (it is the only writer of positions); the API can scale behind it.
+5. Raises are approvals, not transfers: the owner tops up the agent wallet; the worker picks it up on reconciliation.
+
+### Verified and not verified
+
+Verified here (sandbox, no mainnet access): the full loop in paper mode on the synthetic tape, in the browser —
+signed proposal → snapshot → signed ballot + crowd → quorum → rule rewritten and linked to the vote, executed one slot
+after close → trades citing the rule; hire; signed ratings; 30 unit tests (`npm test`) covering ballots with real
+ed25519 keys, bonding-curve decoding against pump.fun's layout, movers/engine, paper fills and PnL, DB diff/patches,
+and the worker's persist + vote execution path.
+
+Not verified here: anything that needs the network (PumpPortal websocket shapes and trade-local responses, RPC
+snapshots, live signing). Those paths are written against the public docs and typed, but run them on devnet-like
+amounts first.
 
 ## Stack
 

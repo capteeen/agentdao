@@ -12,8 +12,11 @@ export interface MarketSnapshot {
   newLaunches: { mint: string; ticker: string; ageBlocks: number; devPct: number }[];
   movers: { mint: string; ticker: string; move5m: number }[];
   copyBuys: { wallet: string; mint: string; ticker: string }[];
-  positions: { mint: string; ticker: string; mult: number; size: number }[];
+  positions: { mint: string; ticker: string; mult: number; size: number; peak?: number }[];
 }
+
+/** Stop-loss per risk level: Interns cut early, Degens ride it down. */
+export const STOP_LOSS: Record<RuleSet["risk"], number> = { intern: 0.2, staff: 0.35, manager: 0.5, degen: 0.8 };
 
 export interface Intent {
   kind: "buy" | "sell" | "launch";
@@ -28,13 +31,16 @@ export function decide(m: MarketSnapshot, rules: RuleSet, vault: number): Intent
   const size = vault * Math.min(RISK_PCT[rules.risk], 0.9);
   const out: Intent[] = [];
   const tp = { "2x": 2, "5x": 5, "10x": 10, never: Infinity }[rules.takeProfit];
+  // "never" still exits when a pump stalls: the curve gives back a third of its gain.
+  const stop = STOP_LOSS[rules.risk];
   for (const p of m.positions) {
     if (p.mult >= tp) out.push({ kind: "sell", mint: p.mint, ticker: p.ticker, sizeSol: p.size, rule: "takeProfit", why: { mult: p.mult } });
-    else if (p.mult <= 0.5) out.push({ kind: "sell", mint: p.mint, ticker: p.ticker, sizeSol: p.size, rule: "risk", why: { stop: -50 } });
+    else if (p.mult <= 1 - stop) out.push({ kind: "sell", mint: p.mint, ticker: p.ticker, sizeSol: p.size, rule: "risk", why: { stop: -stop * 100 } });
+    else if (tp === Infinity && p.peak && p.mult > 1.5 && p.mult < p.peak * 0.66) out.push({ kind: "sell", mint: p.mint, ticker: p.ticker, sizeSol: p.size, rule: "takeProfit", why: { mult: p.mult, peak: p.peak } });
   }
   switch (rules.strategy) {
     case "sniper": {
-      const c = m.newLaunches.find((l) => l.ageBlocks <= 3 && l.devPct < 10);
+      const c = m.newLaunches.find((l) => l.ageBlocks <= 12 && l.devPct < 10);
       if (c) out.push({ kind: "buy", mint: c.mint, ticker: c.ticker, sizeSol: size, rule: "strategy", why: { ageBlocks: c.ageBlocks, devPct: c.devPct } });
       break;
     }

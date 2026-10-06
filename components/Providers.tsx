@@ -1,13 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { fakeWallet, mulberry32 } from "@/lib/util";
 import { ConnectionProvider, WalletProvider, useWallet } from "@solana/wallet-adapter-react";
 import { WalletModalProvider } from "@solana/wallet-adapter-react-ui";
 import { PhantomWalletAdapter } from "@solana/wallet-adapter-phantom";
 import { SolflareWalletAdapter } from "@solana/wallet-adapter-solflare";
 import "@solana/wallet-adapter-react-ui/styles.css";
 import { backend } from "@/lib/backend";
+import { adapterSigner, demoKeypair, demoSigner, setSigner } from "@/lib/backend/signer";
 import { useBoss } from "@/lib/store";
 import { sfx } from "./sound";
 
@@ -15,7 +15,8 @@ const RPC = process.env.NEXT_PUBLIC_SOLANA_RPC ?? "https://api.mainnet-beta.sola
 
 /** Create a throwaway mock wallet so a visitor can vote right away. */
 export function startDemoWallet(holdAgentId?: string) {
-  const w = fakeWallet(mulberry32(Date.now() >>> 0));
+  // A real local keypair: it can sign ballots, so the server treats it like any wallet.
+  const w = demoKeypair().publicKey.toBase58();
   const s = useBoss.getState();
   // A first-time visitor who clicks a vote gets a stake in that agent so the
   // first order always counts (0.5% of supply).
@@ -46,6 +47,18 @@ function SimRunner() {
     } catch {}
     return backend.start();
   }, []);
+  return null;
+}
+
+/** Keep the backend's signer in sync with the wallet adapter / demo wallet. */
+function SignerSync() {
+  const { publicKey, signMessage, signTransaction } = useWallet();
+  const demo = useBoss((s) => s.demoWallet);
+  useEffect(() => {
+    if (publicKey && signMessage) setSigner(adapterSigner(publicKey.toBase58(), signMessage, signTransaction));
+    else if (demo) setSigner(demoSigner());
+    else setSigner(null);
+  }, [publicKey, signMessage, signTransaction, demo]);
   return null;
 }
 
@@ -121,6 +134,7 @@ export default function Providers({ children }: { children: ReactNode }) {
       <WalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>
           <SimRunner />
+          <SignerSync />
           <HoldingsSync />
           <ThemeSync />
           <SoundFx />
