@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, type ReactNode } from "react";
-import { ConnectionProvider as CP, WalletProvider as WP, useWallet } from "@solana/wallet-adapter-react";
-import type { Adapter } from "@solana/wallet-adapter-base";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { fakeWallet, mulberry32 } from "@/lib/util";
+import { ConnectionProvider, WalletProvider, useWallet } from "@solana/wallet-adapter-react";
 import { WalletModalProvider } from "@solana/wallet-adapter-react-ui";
 import { PhantomWalletAdapter } from "@solana/wallet-adapter-phantom";
 import { SolflareWalletAdapter } from "@solana/wallet-adapter-solflare";
@@ -11,18 +11,29 @@ import { backend } from "@/lib/backend";
 import { useBoss } from "@/lib/store";
 import { sfx } from "./sound";
 
-// wallet-adapter-react pulls a nested @types/react@19 (via react-native); re-type for React 18.
-const ConnectionProvider = CP as unknown as (p: { endpoint: string; children: ReactNode }) => JSX.Element;
-const WalletProvider = WP as unknown as (p: { wallets: Adapter[]; autoConnect?: boolean; children: ReactNode }) => JSX.Element;
-
 const RPC = process.env.NEXT_PUBLIC_SOLANA_RPC ?? "https://api.mainnet-beta.solana.com";
+
+/** Create a throwaway mock wallet so a visitor can vote right away. */
+export function startDemoWallet(holdAgentId?: string) {
+  const w = fakeWallet(mulberry32(Date.now() >>> 0));
+  const s = useBoss.getState();
+  // A first-time visitor who clicks a vote gets a stake in that agent so the
+  // first order always counts (0.5% of supply).
+  const forced = holdAgentId && s.agents[holdAgentId] ? { [holdAgentId]: Math.floor(s.agents[holdAgentId].supply * 0.005) } : {};
+  useBoss.setState({ demoWallet: w, holdings: { ...s.holdings, ...forced } });
+  try {
+    localStorage.setItem("boss:demo", w);
+  } catch {}
+  useBoss.getState().toast({ kind: "info", text: "Demo wallet created. You now hold a few agents. Give one an order.", href: "/me" });
+  return w;
+}
 
 /** The address we act as: a connected wallet, or the demo wallet. */
 export function useMyWallet() {
   const { publicKey } = useWallet();
   const demo = useBoss((s) => s.demoWallet);
   const address = publicKey?.toBase58() ?? demo ?? null;
-  return { address, connected: !!address, isDemo: !publicKey && !!demo };
+  return { address, connected: !!address, isDemo: !publicKey && !!demo, ensure: (holdAgentId?: string) => address ?? startDemoWallet(holdAgentId) };
 }
 
 function SimRunner() {
@@ -42,7 +53,7 @@ function SimRunner() {
 function HoldingsSync() {
   const { address } = useMyWallet();
   const ready = useBoss((s) => s.ready);
-  const n = useBoss((s) => s.agents.length);
+  const n = useBoss((s) => Object.keys(s.agents).length);
   useEffect(() => {
     if (!ready) return;
     if (!address) {
@@ -63,9 +74,21 @@ function ThemeSync() {
   return null;
 }
 
-/** 8-bit sounds for world events (when enabled). */
+/** 8-bit sounds for world events. On by default, but browsers only allow
+ *  audio after the first user gesture, so we arm on the first click/tap. */
 function SoundFx() {
-  const sound = useBoss((s) => s.prefs.sound);
+  const soundPref = useBoss((s) => s.prefs.sound);
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    const arm = () => setArmed(true);
+    window.addEventListener("pointerdown", arm, { once: true });
+    window.addEventListener("keydown", arm, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", arm);
+      window.removeEventListener("keydown", arm);
+    };
+  }, []);
+  const sound = soundPref && armed;
   const top = useBoss((s) => s.events[0]?.id);
   const bell = useBoss((s) => s.bell);
   const first = useRef(true);

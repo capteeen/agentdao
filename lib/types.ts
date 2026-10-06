@@ -54,6 +54,11 @@ export interface Agent {
   lastAction?: { kind: "buy" | "sell" | "launch"; at: number };
   /** Last time a vote changed this agent (drives the "orders arriving" anim). */
   lastOrderAt?: number;
+  lastOrderVote?: string;
+  /** Set when a vote passes: the agent must trade under the new rule by this time. */
+  nextTradeAt?: number;
+  /** Vault size right before firing (what was paid out to holders). */
+  liquidated?: number;
   seed: number;
 }
 
@@ -70,6 +75,7 @@ export interface Vote {
   endsAt: number;
   status: "live" | "passed" | "failed";
   winner?: string;
+  closeSlot?: number;
   executedAt?: number;
   executedSlot?: number;
   txSig?: string;
@@ -93,7 +99,7 @@ export interface Trade {
   txSig?: string;
 }
 
-export type EventKind = "vote_open" | "vote_pass" | "vote_fail" | "trade" | "launch" | "fired" | "report" | "hired";
+export type EventKind = "vote_open" | "vote_pass" | "vote_fail" | "trade" | "launch" | "fired" | "report" | "hired" | "gossip" | "payout";
 
 export interface BossEvent {
   id: string;
@@ -113,6 +119,8 @@ export interface ReportCard {
   feesPaid: number;
   trades: number;
   raters: number; // "Rated by N holders"
+  up: number;
+  down: number;
   grade: string;
 }
 

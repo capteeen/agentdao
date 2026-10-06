@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { useBoss } from "@/lib/store";
+import { useAgents, useBoss, useVotes } from "@/lib/store";
 import { sol } from "@/lib/util";
 import Face from "@/components/Face";
 import { Loading, WalletButton } from "@/components/Chrome";
@@ -11,10 +11,12 @@ import { Pnl, useNow, VoteRow } from "@/components/Widgets";
 
 export default function Me() {
   const ready = useBoss((s) => s.ready);
-  const agents = useBoss((s) => s.agents);
-  const votes = useBoss((s) => s.votes);
+  const agents = useAgents();
+  const votes = useVotes();
+  const agentMap = useBoss((s) => s.agents);
   const holdings = useBoss((s) => s.holdings);
   const myVotes = useBoss((s) => s.myVotes);
+  const payouts = useBoss((s) => s.payouts);
   const { address, isDemo } = useMyWallet();
   const now = useNow(1000);
   const [claimed, setClaimed] = useState<Record<string, boolean>>({});
@@ -77,6 +79,20 @@ export default function Me() {
           </div>
         </div>
         <aside className="space-y-4">
+          {payouts.length > 0 && (
+            <div className="px-box !bg-ok p-4 text-[#1b1815]">
+              <p className="h-pixel text-[8px] uppercase">Liquidation payouts received</p>
+              {payouts.slice(0, 6).map((p, i) => (
+                <div key={i} className="flex justify-between text-lg">
+                  <Link href={`/agent/${p.agentId}`} className="underline decoration-dotted">
+                    ${p.ticker} fired
+                  </Link>
+                  <span>+{p.sol} SOL</span>
+                </div>
+              ))}
+              <p className="h-pixel mt-2 text-[10px]">Total +{payouts.reduce((s, p) => s + p.sol, 0).toFixed(4)} SOL</p>
+            </div>
+          )}
           <div className="memo-card p-4">
             <p className="h-pixel text-[8px] uppercase">Claimable fee share</p>
             <p className="h-pixel mt-2 text-xl">{sol(totalClaim, 4)} SOL</p>
@@ -87,7 +103,7 @@ export default function Me() {
             <div className="space-y-2">
               {open.map((v) => (
                 <div key={v.id} className="relative">
-                  <VoteRow vote={v} agent={agents.find((a) => a.id === v.agentId)} now={now} />
+                  <VoteRow vote={v} agent={agentMap[v.agentId]} now={now} />
                   {myVotes[v.id] && <span className="tag absolute right-3 top-12 !bg-ok !text-[#1b1815]">voted</span>}
                 </div>
               ))}

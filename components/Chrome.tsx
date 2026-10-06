@@ -6,8 +6,9 @@ import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useBoss } from "@/lib/store";
-import { fakeWallet, mulberry32, short } from "@/lib/util";
-import { useMyWallet } from "./Providers";
+import { short } from "@/lib/util";
+import { startDemoWallet } from "./Providers";
+import { Toasts } from "./Widgets";
 
 const WalletMultiButton = dynamic(() => import("@solana/wallet-adapter-react-ui").then((m) => m.WalletMultiButton), { ssr: false });
 
@@ -50,13 +51,7 @@ export function DemoWalletLink({ className = "" }: { className?: string }) {
     <button
       className={`text-dim hover:text-memo text-base underline decoration-dotted ${className}`}
       title="No wallet extension? Use a throwaway mock wallet to try voting."
-      onClick={() => {
-        const w = fakeWallet(mulberry32(Date.now() >>> 0));
-        useBoss.setState({ demoWallet: w });
-        try {
-          localStorage.setItem("boss:demo", w);
-        } catch {}
-      }}
+      onClick={() => startDemoWallet()}
     >
       or demo wallet
     </button>
@@ -103,6 +98,9 @@ export function Header() {
           <button className="text-xl" title="Toggle 8-bit sounds" onClick={() => setPrefs({ sound: !prefs.sound })}>
             {prefs.sound ? "🔊" : "🔇"}
           </button>
+          <button className={`h-pixel text-[8px] px-1 ${prefs.officeClock ? "text-memo" : "text-dim"}`} title="Office clock: show vote timers in office time (1 mock second = 40 real seconds, so a 90s vote reads as 1h)" onClick={() => setPrefs({ officeClock: !prefs.officeClock })}>
+            ⏱{prefs.officeClock ? "1h" : "90s"}
+          </button>
           <button className="text-xl" title="Night mode" onClick={() => setPrefs({ theme: prefs.theme === "dark" ? "light" : "dark" })}>
             {prefs.theme === "dark" ? "🌙" : "☀️"}
           </button>
@@ -145,7 +143,25 @@ export function Footer() {
       </p>
       <p className="mt-3 h-pixel text-[8px] uppercase">
         {backend === "sim" ? "Phase 1 · mock simulator · no real trades" : "Live"} · <Link href="/how" className="link">How it works</Link>
+        {backend === "sim" && (
+          <>
+            {" "}
+            ·{" "}
+            <button
+              className="link"
+              onClick={() => {
+                try {
+                  localStorage.removeItem("boss:world:v2");
+                } catch {}
+                location.reload();
+              }}
+            >
+              Reset office
+            </button>
+          </>
+        )}
       </p>
+      <Toasts />
     </footer>
   );
 }

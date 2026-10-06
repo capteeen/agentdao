@@ -16,17 +16,37 @@
   color-scheme: dark;
 }
 html.light {
-  --base: 236 230 216;
-  --panel: 250 246 236;
-  --panel2: 228 220 204;
-  --line: 160 148 130;
+  --base: 232 226 212;
+  --panel: 246 242 232;
+  --panel2: 222 214 198;
+  --line: 120 108 92;
   --ink: 27 24 21;
-  --dim: 100 92 84;
-  --office: 46 110 190;
-  --memo: 200 170 20;
-  --stamp: 200 40 52;
-  --ok: 46 140 70;
+  --dim: 92 84 76;
+  --office: 36 96 176;
+  --memo: 150 120 0;
+  --stamp: 190 34 46;
+  --ok: 30 120 56;
   color-scheme: light;
+}
+/* In light mode the yellow memo surfaces keep their colour, but anything that
+   used the memo token as text needs the darker ink version for contrast. */
+html.light .ticker {
+  background: #2a2520;
+}
+html.light .odo-digit {
+  background: #2a2520;
+}
+html.light .tag.\!bg-memo,
+html.light .px-btn.memo {
+  background: #f5e663;
+  color: #1b1815;
+}
+html.light .stamp-mark.ok {
+  color: #1e7838;
+  border-color: #1e7838;
+}
+html.light .ov-tip.bg-memo {
+  background: #f5e663;
 }
 
 html,
@@ -282,4 +302,31 @@ img,
 .wallet-adapter-dropdown-list {
   border-radius: 0 !important;
   font-family: "Press Start 2P", monospace;
+}
+
+/* camera caption under a focused desk */
+.ov-cap {
+  position: absolute;
+  pointer-events: none;
+  transform: translate(-50%, 0);
+  white-space: nowrap;
+  max-width: 90vw;
+  animation: capin 300ms steps(4);
+}
+@keyframes capin {
+  from {
+    transform: translate(-50%, 12px);
+    opacity: 0;
+  }
+}
+
+/* toasts */
+.toast {
+  animation: toastin 260ms steps(4);
+}
+@keyframes toastin {
+  from {
+    transform: translateY(16px);
+    opacity: 0;
+  }
 }

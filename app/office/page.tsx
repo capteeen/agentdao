@@ -5,7 +5,7 @@ import Office from "@/components/Office";
 import AgentCard from "@/components/AgentCard";
 import { Loading } from "@/components/Chrome";
 import { Ticker } from "@/components/Widgets";
-import { useBoss } from "@/lib/store";
+import { useAgents, useBoss, useVotes } from "@/lib/store";
 import { LABEL, RISKS, STRATEGIES } from "@/lib/rules";
 import type { Agent } from "@/lib/types";
 
@@ -26,8 +26,8 @@ function Seg<T extends string>({ value, options, onChange, label }: { value: T; 
 
 export default function OfficePage() {
   const ready = useBoss((s) => s.ready);
-  const agents = useBoss((s) => s.agents);
-  const votes = useBoss((s) => s.votes);
+  const agents = useAgents();
+  const votes = useVotes();
   const [strategy, setStrategy] = useState<"all" | Agent["rules"]["strategy"]>("all");
   const [risk, setRisk] = useState<"all" | Agent["rules"]["risk"]>("all");
   const [status, setStatus] = useState<"all" | "working" | "sweating" | "fired">("all");

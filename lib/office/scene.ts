@@ -28,6 +28,15 @@ export interface Memo {
   fire?: boolean;
 }
 
+/** Report cards fall onto every desk when the bell rings. */
+export interface ReportDrop {
+  at: number;
+  grades: Record<string, string>; // agentId -> grade
+}
+
+export const PAYOUT_MS = 3200;
+export const REPORT_DROP_MS = 4500;
+
 export interface Layout {
   slots: Map<string, { x: number; z: number; corner: boolean }>;
   width: number; // floor extents
@@ -252,6 +261,7 @@ export interface DynOpts {
   now: number;
   t: number; // seconds, for animation
   hoverId?: string | null;
+  reportDrop?: ReportDrop | null;
 }
 
 export function dynamicBoxes(L: Layout, o: DynOpts): Box[] {
@@ -291,12 +301,16 @@ export function dynamicBoxes(L: Layout, o: DynOpts): Box[] {
     const hover = o.hoverId === a.id;
     // risk-coloured floor mat (shows the current order at a glance)
     const recent = a.lastOrderAt && now - a.lastOrderAt < 2500;
-    out.push({ x, y: -0.02, z: z - 0.1, w: dw + 0.5, h: 0.04, d: 2.1, c: recent ? (Math.sin(t * 20) > 0 ? C.ok : C.memo) : hover ? 0xf4f4f2 : mix(hexToNum(RISK_COLOR[a.rules.risk]), C.floor, 0.45) });
+    const riskC = hexToNum(RISK_COLOR[a.rules.risk]);
+    out.push({ x, y: -0.02, z: z - 0.1, w: dw + 0.5, h: 0.04, d: 2.1, c: recent ? (Math.sin(t * 20) > 0 ? C.ok : C.memo) : hover ? 0xf4f4f2 : mix(riskC, C.floor, 0.18) });
+    // the desk itself carries the risk colour (its "department")
+    const deskC = mix(riskC, C.desk, 0.35);
+    const deskTopC = mix(riskC, C.deskTop, 0.25);
     if (st !== "fired") {
       // Desk faces the camera: worker sits behind it (towards -z) facing +z,
       // laptop lid towards the viewer so the face stays visible.
-      out.push({ x, y: 0, z: z + 0.3, w: dw, h: 0.72, d: 0.9, c: C.desk });
-      out.push({ x, y: 0.72, z: z + 0.3, w: dw + 0.1, h: 0.1, d: 1.0, c: C.deskTop });
+      out.push({ x, y: 0, z: z + 0.3, w: dw, h: 0.72, d: 0.9, c: deskC });
+      out.push({ x, y: 0.72, z: z + 0.3, w: dw + 0.1, h: 0.1, d: 1.0, c: deskTopC });
       const screenOn = st !== "asleep";
       const flick = st === "typing" || st === "corner" ? (Math.sin(t * 6 + a.seed) > 0.85 ? C.ok : C.screen) : st === "sweating" ? (Math.sin(t * 8) > 0 ? C.stamp : C.screen) : C.screen;
       // laptop: base + lid (lid glows on the side facing the worker; we see its back + a logo)
@@ -333,6 +347,46 @@ export function dynamicBoxes(L: Layout, o: DynOpts): Box[] {
     }
     // hover beacon
     if (hover) out.push({ x, y: 2.4 + Math.sin(t * 4) * 0.1, z: z - 0.4, w: 0.25, h: 0.25, d: 0.25, c: C.memo });
+  }
+
+  // Payout: coins burst from a fired desk out to the holders (the room edges).
+  for (const a of o.agents) {
+    if (!a.firedAt || !a.liquidated || now - a.firedAt > PAYOUT_MS) continue;
+    const slot = L.slots.get(a.id);
+    if (!slot) continue;
+    const p = (now - a.firedAt) / PAYOUT_MS;
+    const n = Math.min(14, 4 + Math.round(Math.log2(1 + a.liquidated) * 3));
+    for (let k = 0; k < n; k++) {
+      const ang = (k / n) * Math.PI * 2 + a.seed;
+      const delay = (k % 4) * 0.08;
+      const q = Math.max(0, Math.min(1, (p - delay) / (1 - delay)));
+      if (q <= 0 || q >= 1) continue;
+      const dist = 2 + (k % 3) * 1.2;
+      const cx = slot.x + Math.cos(ang) * dist * q;
+      const cz = slot.z + Math.sin(ang) * dist * q;
+      const cy = 1 + Math.sin(q * Math.PI) * 2.2 + (q > 0.9 ? 0 : 0);
+      const spin = 0.12 + Math.abs(Math.sin(t * 12 + k)) * 0.12;
+      out.push({ x: cx, y: cy, z: cz, w: spin, h: 0.26, d: 0.26, c: k % 2 ? 0x14f195 : 0xffd700 });
+    }
+  }
+
+  // Report cards: on the bell, a card falls from the ceiling onto every desk.
+  if (o.reportDrop && now - o.reportDrop.at < REPORT_DROP_MS) {
+    const age = (now - o.reportDrop.at) / 1000;
+    for (const a of o.agents) {
+      const slot = L.slots.get(a.id);
+      const g = o.reportDrop.grades[a.id];
+      if (!slot || !g) continue;
+      const delay = (a.seed % 7) * 0.12;
+      const fall = Math.min(1, Math.max(0, (age - delay) / 0.9));
+      if (fall <= 0) continue;
+      const e = 1 - (1 - fall) * (1 - fall);
+      const y = 0.84 + (1 - e) * 5;
+      const wob = fall < 1 ? Math.sin(t * 14 + a.seed) * 0.15 : 0;
+      const col = g.startsWith("A") ? 0xc9f0cf : g === "F" ? 0xf5b5ba : C.memo;
+      out.push({ x: slot.x + wob, y, z: slot.z + 0.05, w: 0.7, h: 0.05, d: 0.9, c: col });
+      for (let k = -1; k <= 1; k++) out.push({ x: slot.x + wob, y: y + 0.05, z: slot.z + 0.05 + k * 0.22, w: 0.5, h: 0.01, d: 0.06, c: 0x8a7f2a });
+    }
   }
 
   // Flying memos: boardroom -> desk, then stamp.

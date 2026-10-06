@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { useBoss } from "@/lib/store";
+import { useAgents, useBoss, useVotes } from "@/lib/store";
 import type { Agent } from "@/lib/types";
 import { duration, sol } from "@/lib/util";
 import { LABEL } from "@/lib/rules";
@@ -21,8 +21,9 @@ type Tab = (typeof TABS)[number][0];
 
 export default function Leaderboard() {
   const ready = useBoss((s) => s.ready);
-  const agents = useBoss((s) => s.agents);
-  const votes = useBoss((s) => s.votes);
+  const agents = useAgents();
+  const votes = useVotes();
+  const agentMap = useBoss((s) => s.agents);
   const reports = useBoss((s) => s.reports);
   const now = useNow(5000);
   const [tab, setTab] = useState<Tab>("pnl");
@@ -103,7 +104,7 @@ export default function Leaderboard() {
           <h2 className="h-pixel mb-3 text-[11px] uppercase">🔔 Latest report cards</h2>
           <div className="space-y-3">
             {latestReports.map((r) => (
-              <ReportCardView key={r.id} r={r} agent={agents.find((a) => a.id === r.agentId)} />
+              <ReportCardView key={r.id} r={r} agent={agentMap[r.agentId]} />
             ))}
           </div>
         </aside>

@@ -14,6 +14,8 @@ export interface OfficeRenderer {
   setYaw(yaw: number): void;
   /** >1 crops into the floor (the corners of the diamond are mostly empty). */
   setZoom(z: number): void;
+  /** Camera target: a world point and an extra zoom multiplier (1 = full floor). */
+  setView(cx: number, cz: number, mul: number): void;
   dispose(): void;
   kind: "3d" | "2d";
 }
@@ -149,6 +151,11 @@ export class ThreeOffice implements OfficeRenderer {
     this.zoom = z;
     this.fit();
   }
+  view = { cx: 0, cz: 0, mul: 1 };
+  setView(cx: number, cz: number, mul: number) {
+    this.view = { cx, cz, mul };
+    this.fit();
+  }
 
   resize(w: number, h: number) {
     this.w = Math.max(1, w);
@@ -187,16 +194,23 @@ export class ThreeOffice implements OfficeRenderer {
       minY = Math.min(minY, v.y);
       maxY = Math.max(maxY, v.y);
     }
-    const cx = (minX + maxX) / 2,
+    let cx = (minX + maxX) / 2,
       cy = (minY + maxY) / 2;
     let hw = (maxX - minX) / 2 + 0.6,
       hh = (maxY - minY) / 2 + 0.6;
     const aspect = this.w / this.h;
     if (hw / hh > aspect) hh = hw / aspect;
     else hw = hh * aspect;
-    const z = aspect < 1.1 ? 1 : this.zoom; // portrait: show the whole floor
+    const z = (aspect < 1.1 ? Math.min(this.zoom, 1.45) : this.zoom) * this.view.mul; // portrait: a tighter crop, pinch for more
     hw /= z;
     hh /= z;
+    if (this.view.mul !== 1) {
+      // blend the camera centre towards the focus point as we zoom in
+      const f = new THREE.Vector3(this.view.cx, 0.8, this.view.cz).applyMatrix4(inv);
+      const k = Math.min(1, (this.view.mul - 1) / 0.6);
+      cx = cx + (f.x - cx) * k;
+      cy = cy + (f.y - cy) * k;
+    }
     Object.assign(this.camera, { left: cx - hw, right: cx + hw, top: cy + hh, bottom: cy - hh });
     this.camera.updateProjectionMatrix();
   }
@@ -250,6 +264,11 @@ export class IsoOffice implements OfficeRenderer {
     this.zoom = z;
     this.fit();
   }
+  view = { cx: 0, cz: 0, mul: 1 };
+  setView(cx: number, cz: number, mul: number) {
+    this.view = { cx, cz, mul };
+    this.fit();
+  }
   setStatic(boxes: Box[], bounds: { w: number; d: number }) {
     this.statics = boxes;
     this.bounds = bounds;
@@ -270,9 +289,16 @@ export class IsoOffice implements OfficeRenderer {
     const { w, d } = this.bounds;
     const isoW = (w + d) * 0.866;
     const isoH = (w + d) * 0.5 + 4;
-    this.s = Math.min(this.lw / (isoW + 1), this.lh / (isoH + 1)) * this.zoom;
+    const aspect = this.lw / this.lh;
+    this.s = Math.min(this.lw / (isoW + 1), this.lh / (isoH + 1)) * (aspect < 1.1 ? Math.min(this.zoom, 1.45) : this.zoom) * this.view.mul;
     this.ox = this.lw / 2;
     this.oy = this.lh / 2 + 1.5 * this.s;
+    if (this.view.mul !== 1) {
+      const k = Math.min(1, (this.view.mul - 1) / 0.6);
+      const [fx, fy] = this.p(this.view.cx, 0.8, this.view.cz);
+      this.ox -= (fx - this.lw / 2) * k;
+      this.oy -= (fy - this.lh / 2) * k;
+    }
   }
   private p(x: number, y: number, z: number): [number, number] {
     return [this.ox + (x - z) * 0.866 * this.s, this.oy + (x + z) * 0.5 * this.s - y * this.s];

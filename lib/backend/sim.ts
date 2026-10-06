@@ -1,19 +1,89 @@
 "use client";
 
 import type { BossBackend, HireInput } from "./types";
-import { mutate, useBoss } from "../store";
-import { closeVote, createWorld, getAgent, hireAgent, openRandomVote, openVote, SIM, stepReports, stepTrade, stepVotes } from "../sim";
+import { mutate, pickWorld, useBoss } from "../store";
+import { agentList, closeVote, createWorld, getAgent, hireAgent, liveVotes, openRandomVote, openVote, patchAgent, patchVote, rateReport, SIM, stepGossip, stepObey, stepReports, stepTrade, stepVotes, type World } from "../sim";
 import { fakeWallet, hashStr, mulberry32, range } from "../util";
 import type { Agent } from "../types";
 
 const rng = mulberry32((Date.now() ^ 0x9e3779b9) >>> 0);
+
+const SAVE_KEY = "boss:world:v2";
+const SAVE_MAX_AGE = 60 * 60 * 1000; // an hour away and HR resets the floor
 
 /** Mock holdings: a wallet "holds" ~1/3 of agents, deterministic per pubkey. */
 export function mockHoldingFor(wallet: string, a: Agent): number {
   if (a.ownerWallet === wallet) return Math.floor(a.supply * 0.04);
   const h = hashStr(wallet + a.id);
   if (h % 3 !== 0) return 0;
-  return Math.floor(a.supply * (0.001 + ((h >>> 8) % 1000) / 1000 * 0.03));
+  return Math.floor(a.supply * (0.001 + (((h >>> 8) % 1000) / 1000) * 0.03));
+}
+
+function loadWorld(now: number): World | null {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const { savedAt, world } = JSON.parse(raw) as { savedAt: number; world: World };
+    if (!world?.agents || now - savedAt > SAVE_MAX_AGE) return null;
+    // Votes keep their deadlines; anything that should have closed while the tab
+    // was away closes on the first heartbeat.
+    return world;
+  } catch {
+    return null;
+  }
+}
+
+function saveWorld() {
+  try {
+    const s = useBoss.getState();
+    if (!s.ready) return;
+    const w = pickWorld(s);
+    localStorage.setItem(SAVE_KEY, JSON.stringify({ savedAt: Date.now(), world: { ...w, trades: w.trades.slice(0, 600), events: w.events.slice(0, 150) } }));
+  } catch {}
+}
+
+/** React to world changes that the UI wants to surface (toasts, payouts, camera). */
+function watchEvents() {
+  let lastTop = useBoss.getState().events[0]?.id;
+  return useBoss.subscribe((s, prev) => {
+    if (s.events === prev.events) return;
+    const fresh: typeof s.events = [];
+    for (const e of s.events) {
+      if (e.id === lastTop) break;
+      fresh.push(e);
+    }
+    lastTop = s.events[0]?.id;
+    for (const e of fresh.reverse()) {
+      const a = s.agents[e.agentId];
+      if (!a) continue;
+      if (e.kind === "vote_pass" || e.kind === "fired") {
+        const mine = e.voteId && s.myVotes[e.voteId];
+        const label = e.kind === "fired" ? `$${a.ticker} fired. Vault paid out.` : e.text.replace(/^Holders of /, "").replace(" Agent complied.", "");
+        useBoss.setState({ focus: { agentId: a.id, at: e.at, label } });
+        if (mine) {
+          const v = s.votes[e.voteId!];
+          useBoss.getState().toast({
+            kind: "obeyed",
+            text: v?.winner === mine ? `Your order was obeyed in slot ${v?.executedSlot?.toLocaleString()}: ${label}` : `Vote closed: ${label} (you voted ${mine})`,
+            href: `/agent/${a.id}`,
+          });
+        }
+      }
+      if (e.kind === "fired" && a.liquidated && s.holdings[a.id]) {
+        const share = s.holdings[a.id] / a.supply;
+        const sol = +(a.liquidated * share).toFixed(4);
+        useBoss.setState({ payouts: [{ agentId: a.id, ticker: a.ticker, sol, at: e.at, voteId: e.voteId }, ...s.payouts] });
+        useBoss.getState().toast({ kind: "payout", text: `You received ${sol} SOL from $${a.ticker}'s liquidation.`, href: "/me" });
+      }
+      if (e.kind === "trade" || e.kind === "launch") {
+        // The first trade after an order you cast: close the loop.
+        if (a.lastOrderVote && s.myVotes[a.lastOrderVote] && a.lastOrderAt && e.at - a.lastOrderAt < SIM.OBEY_TRADE_MS + 1500 && e.at > a.lastOrderAt) {
+          const t = s.trades[0];
+          if (t && t.agentId === a.id && t.voteId === a.lastOrderVote) useBoss.getState().toast({ kind: "obeyed", text: `$${a.ticker} just traded under your rule: ${t.ruleApplied}.`, href: `/agent/${a.id}#t-${t.id}` });
+        }
+      }
+    }
+  });
 }
 
 export const simBackend: BossBackend = {
@@ -22,10 +92,12 @@ export const simBackend: BossBackend = {
   start() {
     if (!useBoss.getState().ready) {
       const now = Date.now();
-      useBoss.setState({ ...createWorld(1337, now), ready: true, backend: "sim" });
+      const world = loadWorld(now) ?? createWorld(1337, now);
+      useBoss.setState({ ...world, ready: true, backend: "sim" });
     }
     const timers: ReturnType<typeof setTimeout>[] = [];
     let alive = true;
+    const unsub = watchEvents();
 
     // trades every 3-8s
     const tradeLoop = () => {
@@ -35,18 +107,22 @@ export const simBackend: BossBackend = {
     };
     timers.push(setTimeout(tradeLoop, 1500));
 
-    // 1s heartbeat: slots advance, tallies fill, votes close
+    // 400ms heartbeat (one slot): slots advance, tallies fill, votes close, orders are obeyed
+    let tick = 0;
     timers.push(
       setInterval(() => {
+        tick++;
         mutate((w) => {
-          w.slot += Math.round(1000 / SIM.SLOT_MS);
-          stepVotes(w, rng, Date.now());
+          w.slot += 1;
+          stepObey(w, rng, Date.now());
+          if (tick % 2 === 0) stepVotes(w, rng, Date.now());
         });
-      }, 1000),
+      }, SIM.SLOT_MS),
     );
 
     timers.push(setInterval(() => mutate((w) => openRandomVote(w, rng, Date.now())), SIM.VOTE_EVERY_MS));
     timers.push(setInterval(() => mutate((w) => openRandomVote(w, rng, Date.now(), "fire")), SIM.FIRE_EVERY_MS));
+    timers.push(setInterval(() => mutate((w) => stepGossip(w, rng, Date.now())), SIM.GOSSIP_EVERY_MS));
     timers.push(
       setInterval(() => {
         mutate((w) => stepReports(w, rng, Date.now()));
@@ -58,38 +134,44 @@ export const simBackend: BossBackend = {
     timers.push(
       setInterval(() => {
         const s = useBoss.getState();
-        const employed = s.agents.filter((a) => a.status === "working" || a.status === "idle").length;
-        const lastFire = Math.max(0, ...s.agents.map((a) => a.firedAt ?? 0));
+        const all = agentList(s);
+        const employed = all.filter((a) => a.status === "working" || a.status === "idle").length;
+        const lastFire = Math.max(0, ...all.map((a) => a.firedAt ?? 0));
         if (employed < SIM.AGENTS && Date.now() - lastFire > 20_000) mutate((w) => hireAgent(w, rng, Date.now(), {}));
       }, 5000),
     );
 
+    timers.push(setInterval(saveWorld, 5000));
+    const onHide = () => document.visibilityState === "hidden" && saveWorld();
+    document.addEventListener("visibilitychange", onHide);
+
     return () => {
       alive = false;
+      unsub();
       timers.forEach((t) => clearTimeout(t));
+      document.removeEventListener("visibilitychange", onHide);
+      saveWorld();
     };
   },
 
   async holdings(wallet) {
     const s = useBoss.getState();
-    return Object.fromEntries(s.agents.map((a) => [a.id, mockHoldingFor(wallet, a)]).filter(([, n]) => (n as number) > 0));
+    return Object.fromEntries(
+      agentList(s)
+        .map((a) => [a.id, mockHoldingFor(wallet, a)] as const)
+        .filter(([, n]) => n > 0),
+    );
   },
 
   async vote(voteId, option, wallet) {
     const s = useBoss.getState();
-    const v = s.votes.find((x) => x.id === voteId);
+    const v = s.votes[voteId];
     if (!v || v.status !== "live") throw new Error("Vote is closed");
     if (v.voters.some((x) => x.wallet === wallet)) throw new Error("Already voted");
-    const a = s.agents.find((x) => x.id === v.agentId)!;
+    const a = s.agents[v.agentId];
     const weight = s.holdings[a.id] ?? mockHoldingFor(wallet, a);
     if (!weight) throw new Error(`You hold no $${a.ticker}. Buy some to get a vote.`);
-    mutate((w) => {
-      w.votes = w.votes.map((x) =>
-        x.id === voteId
-          ? { ...x, tallies: { ...x.tallies, [option]: (x.tallies[option] ?? 0) + weight }, voters: [{ wallet, option, weight, at: Date.now() }, ...x.voters] }
-          : x,
-      );
-    });
+    mutate((w) => patchVote(w, voteId, { tallies: { ...v.tallies, [option]: (v.tallies[option] ?? 0) + weight }, voters: [{ wallet, option, weight, at: Date.now() }, ...v.voters] }));
     useBoss.setState((st) => ({ myVotes: { ...st.myVotes, [voteId]: option } }));
   },
 
@@ -99,15 +181,19 @@ export const simBackend: BossBackend = {
     mutate((w) => {
       const a = getAgent(w, agentId);
       if (!a || (a.status !== "working" && a.status !== "idle")) throw new Error("Agent is not employed");
-      if (w.votes.some((v) => v.agentId === agentId && v.field === field && v.status === "live")) throw new Error("A vote on that is already live");
+      if (liveVotes(w).some((v) => v.agentId === agentId && v.field === field)) throw new Error("A vote on that is already live");
       const v = openVote(w, rng, a, field, Date.now(), wallet);
-      v.reason = reason;
+      patchVote(w, v.id, { reason });
       id = v.id;
-      w.votes = w.votes.map((x) => (x.id === v.id ? { ...v } : x));
       // proposal fee goes to the agent's vault
-      w.agents = w.agents.map((x) => (x.id === agentId ? { ...x, vault: +(x.vault + SIM.PROPOSAL_FEE).toFixed(3) } : x));
+      patchAgent(w, agentId, { vault: +(a.vault + SIM.PROPOSAL_FEE).toFixed(3) });
     });
     return id;
+  },
+
+  async rate(reportId, up) {
+    mutate((w) => rateReport(w, reportId, up));
+    useBoss.setState((st) => ({ myRatings: { ...st.myRatings, [reportId]: up } }));
   },
 
   async hire(input: HireInput, wallet) {
@@ -132,10 +218,16 @@ export const simBackend: BossBackend = {
   },
 };
 
-// Exposed for dev tools / tests: force-close a vote now.
+/** Dev tools / tests: force-close a vote now, or wipe the saved world. */
 export function debugCloseVote(id: string) {
   mutate((w) => {
-    const v = w.votes.find((x) => x.id === id);
+    const v = w.votes[id];
     if (v) closeVote(w, rng, v, Date.now());
   });
+}
+export function resetWorld() {
+  try {
+    localStorage.removeItem(SAVE_KEY);
+  } catch {}
+  location.reload();
 }

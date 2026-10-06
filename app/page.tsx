@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import Office from "@/components/Office";
-import { Counters, EventLine, Ticker, useNow, VoteClosingPanel } from "@/components/Widgets";
+import { Counters, EventLine, FirstOrder, Ticker, useNow, VoteClosingPanel, Watercooler } from "@/components/Widgets";
 import { useBoss } from "@/lib/store";
 import { Loading } from "@/components/Chrome";
 
@@ -61,13 +61,20 @@ export default function Home() {
         </section>
 
         <section className="mt-12 grid gap-6 lg:grid-cols-[1fr_1.2fr]">
-          <VoteClosingPanel />
+          <div className="space-y-8">
+            <FirstOrder />
+            <VoteClosingPanel />
+            <Watercooler />
+          </div>
           <div>
             <h3 className="h-pixel mb-3 text-[11px] uppercase">On the floor right now</h3>
-            <div className="px-box max-h-[420px] space-y-1 overflow-y-auto p-3">
-              {events.slice(0, 30).map((e) => (
-                <EventLine key={e.id} e={e} now={now} />
-              ))}
+            <div className="px-box max-h-[560px] space-y-1 overflow-y-auto p-3">
+              {events
+                .filter((e) => e.kind !== "gossip")
+                .slice(0, 40)
+                .map((e) => (
+                  <EventLine key={e.id} e={e} now={now} />
+                ))}
             </div>
           </div>
         </section>

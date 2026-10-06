@@ -6,21 +6,22 @@ import { useState } from "react";
 import { useBoss } from "@/lib/store";
 import { backend } from "@/lib/backend";
 import { FIELD_LABEL, optionLabel, ruleValueLabel } from "@/lib/rules";
-import { ago, countdown, short, solscanTx } from "@/lib/util";
+import { ago, short, solscanTx } from "@/lib/util";
 import type { RuleField } from "@/lib/types";
 import { Loading, WalletButton } from "@/components/Chrome";
 import { useMyWallet } from "@/components/Providers";
-import { Tally, useNow } from "@/components/Widgets";
+import { Tally, useCountdown, useNow } from "@/components/Widgets";
 import { sfx } from "@/components/sound";
 
 export default function VotePage({ params }: { params: { id: string } }) {
   const ready = useBoss((s) => s.ready);
-  const v = useBoss((s) => s.votes.find((x) => x.id === params.id));
-  const a = useBoss((s) => (v ? s.agents.find((x) => x.id === v.agentId) : undefined));
+  const v = useBoss((s) => s.votes[params.id]);
+  const a = useBoss((s) => (v ? s.agents[v.agentId] : undefined));
+  const countdown = useCountdown();
   const myVote = useBoss((s) => s.myVotes[params.id]);
   const holding = useBoss((s) => (v ? s.holdings[v.agentId] ?? 0 : 0));
   const sound = useBoss((s) => s.prefs.sound);
-  const { address } = useMyWallet();
+  const { address, ensure } = useMyWallet();
   const now = useNow(250);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -44,11 +45,11 @@ export default function VotePage({ params }: { params: { id: string } }) {
   const weightPct = (holding / v.snapshotSupply) * 100;
 
   const cast = async (opt: string) => {
-    if (!address) return;
+    const who = ensure(a.id); // no wallet yet? spin up a demo one (holding this coin) and vote with it
     setBusy(opt);
     setErr("");
     try {
-      await backend.vote(v.id, opt, address);
+      await backend.vote(v.id, opt, who);
       if (sound) sfx.stamp();
     } catch (e) {
       setErr((e as Error).message);
@@ -94,8 +95,15 @@ export default function VotePage({ params }: { params: { id: string } }) {
           <div className="mt-5 border-t-4 border-dashed border-[#1b1815]/30 pt-4">
             {!address ? (
               <div className="flex flex-wrap items-center gap-3">
-                <span className="text-xl">Connect a wallet to vote.</span>
-                <WalletButton />
+                <span className="text-xl">Give the order:</span>
+                {v.options.map((o) => (
+                  <button key={o} className={`px-btn ${o === "fire" ? "stamp" : ""}`} disabled={!!busy} onClick={() => cast(o)}>
+                    {busy === o ? "…" : optionLabel(v.field, o)}
+                  </button>
+                ))}
+                <span className="w-full text-base opacity-70">
+                  No wallet? Clicking creates a demo wallet so you can try it. <WalletButton compact />
+                </span>
               </div>
             ) : (
               <>

@@ -3,7 +3,8 @@
 import Face from "@/components/Face";
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { reportsFor, useBoss } from "@/lib/store";
+import { reportsFor, useBoss, useVotes } from "@/lib/store";
+import QuickActions from "./QuickActions";
 import type { Agent, RuleField, Trade, Vote } from "@/lib/types";
 import { CADENCE_DESC, FIELD_LABEL, LABEL, optionLabel, RISK_DESC, ruleValueLabel, STRATEGY_DESC } from "@/lib/rules";
 import { ago, duration, pumpUrl, short, sol, solscanAcct, solscanTx } from "@/lib/util";
@@ -101,8 +102,8 @@ function TradeRow({ t, votes, now }: { t: Trade; votes: Vote[]; now: number }) {
 
 export default function AgentView({ id }: { id: string }) {
   const ready = useBoss((s) => s.ready);
-  const a = useBoss((s) => s.agents.find((x) => x.id === id));
-  const allVotes = useBoss((s) => s.votes);
+  const a = useBoss((s) => s.agents[id]);
+  const allVotes = useVotes();
   const allTrades = useBoss((s) => s.trades);
   const allReports = useBoss((s) => s.reports);
   const holding = useBoss((s) => s.holdings[id] ?? 0);
@@ -176,6 +177,7 @@ export default function AgentView({ id }: { id: string }) {
               Buy on pump.fun ↗
             </a>
             <ProposeButton agent={a} />
+            <QuickActions agent={a} />
             {live.length ? (
               <Link href={`/vote/${live[0].id}`} className="px-btn ghost">
                 {`${live.length} live vote${live.length > 1 ? "s" : ""}`}

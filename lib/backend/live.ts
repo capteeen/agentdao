@@ -28,7 +28,16 @@ export const liveBackend: BossBackend = {
     const es = new EventSource("/api/stream");
     es.onmessage = (m) => {
       const msg = JSON.parse(m.data) as { type: "snapshot"; world: World } | { type: "patch"; world: Partial<World> };
-      useBoss.setState({ ...msg.world, ready: true, backend: "live" });
+      if (msg.type === "snapshot") return useBoss.setState({ ...msg.world, ready: true, backend: "live" });
+      // Patches merge by id: agents/votes are maps, logs are prepended.
+      useBoss.setState((s) => ({
+        agents: msg.world.agents ? { ...s.agents, ...msg.world.agents } : s.agents,
+        votes: msg.world.votes ? { ...s.votes, ...msg.world.votes } : s.votes,
+        trades: msg.world.trades ? [...msg.world.trades, ...s.trades].slice(0, 3000) : s.trades,
+        events: msg.world.events ? [...msg.world.events, ...s.events].slice(0, 400) : s.events,
+        reports: msg.world.reports ? [...msg.world.reports, ...s.reports].slice(0, 600) : s.reports,
+        slot: msg.world.slot ?? s.slot,
+      }));
     };
     return () => es.close();
   },
@@ -49,6 +58,11 @@ export const liveBackend: BossBackend = {
     // agent vault, send it, then POST the signature as proof of fee.
     const { id } = await post<{ id: string }>("/api/propose", { agentId, field, wallet, reason, feeTx: "TODO" });
     return id;
+  },
+
+  async rate(reportId, up) {
+    // TODO(phase2): signed `BOSS rate <reportId> <up|down>` message; one per holder.
+    await post("/api/rate", { reportId, up, signature: "TODO" });
   },
 
   async hire(input, wallet) {

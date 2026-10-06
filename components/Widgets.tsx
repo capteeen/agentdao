@@ -3,10 +3,19 @@
 import Face from "@/components/Face";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { selectCounters, useBoss } from "@/lib/store";
+import { selectCounters, useAgents, useBoss, useVotes } from "@/lib/store";
 import type { Agent, BossEvent, ReportCard, Vote } from "@/lib/types";
 import { FIELD_LABEL, LABEL, optionLabel, RISK_COLOR } from "@/lib/rules";
-import { ago, countdown, signed, sol } from "@/lib/util";
+import { SIM } from "@/lib/sim";
+import { backend } from "@/lib/backend";
+import { ago, countdown as rawCountdown, signed, sol } from "@/lib/util";
+import { useMyWallet } from "./Providers";
+
+/** Countdown honouring the office-clock preference (1 mock s = 40 real s). */
+export function useCountdown() {
+  const office = useBoss((s) => s.prefs.officeClock);
+  return (ms: number) => (office ? rawCountdown(ms * SIM.CLOCK) : rawCountdown(ms));
+}
 
 export function useNow(ms = 1000) {
   const [now, setNow] = useState(() => Date.now());
@@ -46,9 +55,9 @@ export function Odometer({ value, decimals = 0, pad = 0 }: { value: number; deci
 }
 
 export function Counters() {
-  const agents = useBoss((s) => s.agents);
-  const votes = useBoss((s) => s.votes);
-  const c = useMemo(() => selectCounters({ agents, votes }), [agents, votes]);
+  const agents = useAgents();
+  const votes = useVotes();
+  const c = useMemo(() => selectCounters(agents, votes), [agents, votes]);
   const items: [string, number, number][] = [
     ["Agents employed", c.employed, 0],
     ["Votes passed", c.votesPassed, 0],
@@ -80,12 +89,14 @@ const KIND_COLOR: Record<string, string> = {
   hired: "text-ok",
   vote_fail: "text-dim",
   trade: "text-ink",
+  gossip: "text-dim italic",
+  payout: "text-ok",
 };
 
 export function Ticker() {
   const events = useBoss((s) => s.events);
   const items = useMemo(() => {
-    const important = events.filter((e) => e.kind !== "trade").slice(0, 14);
+    const important = events.filter((e) => e.kind !== "trade" && e.kind !== "gossip").slice(0, 14);
     const trades = events.filter((e) => e.kind === "trade").slice(0, 6);
     return [...important, ...trades].sort((a, b) => b.at - a.at);
   }, [events]);
@@ -141,6 +152,7 @@ export function Tally({ vote, compact = false }: { vote: Vote; compact?: boolean
 
 export function VoteRow({ vote, agent, now }: { vote: Vote; agent?: Agent; now: number }) {
   const left = vote.endsAt - now;
+  const countdown = useCountdown();
   return (
     <Link href={`/vote/${vote.id}`} className="block px-box p-3 hover:brightness-110">
       <div className="mb-2 flex items-center gap-2">
@@ -155,8 +167,8 @@ export function VoteRow({ vote, agent, now }: { vote: Vote; agent?: Agent; now: 
 }
 
 export function VoteClosingPanel({ limit = 5, agentId }: { limit?: number; agentId?: string }) {
-  const votes = useBoss((s) => s.votes);
-  const agents = useBoss((s) => s.agents);
+  const votes = useVotes();
+  const agentMap = useBoss((s) => s.agents);
   const now = useNow(500);
   const live = votes
     .filter((v) => v.status === "live" && (!agentId || v.agentId === agentId))
@@ -172,7 +184,7 @@ export function VoteClosingPanel({ limit = 5, agentId }: { limit?: number; agent
       ) : (
         <div className="space-y-2">
           {live.map((v) => (
-            <VoteRow key={v.id} vote={v} agent={agents.find((a) => a.id === v.agentId)} now={now} />
+            <VoteRow key={v.id} vote={v} agent={agentMap[v.agentId]} now={now} />
           ))}
         </div>
       )}
@@ -245,6 +257,8 @@ export function EventLine({ e, now }: { e: BossEvent; now: number }) {
 }
 
 export function ReportCardView({ r, agent, share = true }: { r: ReportCard; agent?: Agent; share?: boolean }) {
+  const mine = useBoss((s) => s.myRatings[r.id]);
+  const { address } = useMyWallet();
   const shareUrl = useMemo(() => {
     if (!agent) return "";
     const q = new URLSearchParams({
@@ -286,14 +300,123 @@ export function ReportCardView({ r, agent, share = true }: { r: ReportCard; agen
         <span>Trades</span>
         <span className="text-right">{r.trades}</span>
       </div>
-      <div className="mt-3 flex items-center justify-between">
-        <span className="text-base">Rated by {r.raters} holders</span>
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <span className="text-base">
+          Rated by {r.raters} holders
+          <span className="ml-2 inline-flex gap-1">
+            <button
+              className={`px-1 ${mine === true ? "bg-[#2e8c46] text-white" : "bg-[#1b1815]/10"}`}
+              title={address ? "Good employee" : "Connect a wallet to rate"}
+              disabled={mine !== undefined || !address}
+              onClick={() => backend.rate(r.id, true)}
+            >
+              👍 {r.up}
+            </button>
+            <button
+              className={`px-1 ${mine === false ? "bg-[#e63946] text-white" : "bg-[#1b1815]/10"}`}
+              title={address ? "Bad employee" : "Connect a wallet to rate"}
+              disabled={mine !== undefined || !address}
+              onClick={() => backend.rate(r.id, false)}
+            >
+              👎 {r.down}
+            </button>
+          </span>
+        </span>
         {share && shareUrl && (
           <Link href={shareUrl} className="h-pixel text-[8px] underline">
             SHARE ↗
           </Link>
         )}
       </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------ toasts
+
+export function Toasts() {
+  const toasts = useBoss((s) => s.toasts);
+  const dismiss = useBoss((s) => s.dismissToast);
+  useEffect(() => {
+    if (!toasts.length) return;
+    const t = setTimeout(() => dismiss(toasts[0].id), 7000);
+    return () => clearTimeout(t);
+  }, [toasts, dismiss]);
+  if (!toasts.length) return null;
+  return (
+    <div className="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex flex-col items-center gap-2 px-4 sm:items-end sm:pr-6">
+      {toasts.map((t) => (
+        <Link key={t.id} href={t.href ?? "#"} onClick={() => dismiss(t.id)} className={`toast pointer-events-auto max-w-lg px-4 py-2 text-lg ${t.kind === "payout" ? "px-box !bg-ok text-[#1b1815]" : "memo-card"}`}>
+          <span className="h-pixel mr-2 text-[8px] uppercase">{t.kind === "obeyed" ? "Obeyed" : t.kind === "payout" ? "Payday" : "Memo"}</span>
+          {t.text}
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+/** The office gossip column. */
+export function Watercooler({ limit = 8 }: { limit?: number }) {
+  const events = useBoss((s) => s.events);
+  const now = useNow(5000);
+  const items = useMemo(() => events.filter((e) => e.kind === "gossip").slice(0, limit), [events, limit]);
+  return (
+    <div>
+      <h3 className="h-pixel mb-3 text-[11px] uppercase">🚰 Watercooler</h3>
+      <div className="px-box space-y-1 p-3">
+        {items.map((e) => (
+          <EventLine key={e.id} e={e} now={now} />
+        ))}
+        {!items.length && <p className="text-dim">Quiet. Suspiciously quiet.</p>}
+      </div>
+    </div>
+  );
+}
+
+/** Home: the soonest-closing vote with one-click orders. First thing a visitor does. */
+export function FirstOrder() {
+  const votes = useVotes();
+  const agentMap = useBoss((s) => s.agents);
+  const myVotes = useBoss((s) => s.myVotes);
+  const { ensure } = useMyWallet();
+  const now = useNow(500);
+  const countdown = useCountdown();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState("");
+  const v = useMemo(() => votes.filter((x) => x.status === "live" && x.endsAt - now > 3000 && !myVotes[x.id]).sort((a, b) => a.endsAt - b.endsAt)[0], [votes, now, myVotes]);
+  const a = v ? agentMap[v.agentId] : undefined;
+  if (!v || !a) return null;
+  const cast = async (opt: string) => {
+    const who = ensure(a.id);
+    setBusy(opt);
+    setErr("");
+    try {
+      await backend.vote(v.id, opt, who);
+      useBoss.getState().toast({ kind: "info", text: `Order placed on $${a.ticker}. Watch the boardroom: the memo flies when it closes.`, href: `/vote/${v.id}` });
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div className="memo-card p-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="h-pixel text-[8px] uppercase">Give your first order</p>
+        <span className="h-pixel text-[10px]">{countdown(v.endsAt - now)}</span>
+      </div>
+      <p className="mt-2 text-xl">
+        <Face image={a.image} /> ${a.ticker}: {FIELD_LABEL[v.field].toLowerCase()}?
+      </p>
+      <div className="mt-2 flex flex-wrap gap-1">
+        {v.options.map((o) => (
+          <button key={o} className={`px-btn !py-2 text-[9px] ${o === "fire" ? "stamp" : ""}`} disabled={!!busy} onClick={() => cast(o)}>
+            {busy === o ? "…" : optionLabel(v.field, o)}
+          </button>
+        ))}
+      </div>
+      {err && <p className="mt-1 text-lg text-[#e63946]">{err}</p>}
+      <p className="mt-2 text-base opacity-70">One click. No wallet needed to try: a demo wallet is created for you. Then watch the agent obey.</p>
     </div>
   );
 }

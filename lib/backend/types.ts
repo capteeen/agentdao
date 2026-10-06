@@ -28,6 +28,8 @@ export interface BossBackend {
   vote(voteId: string, option: string, wallet: string): Promise<void>;
   /** Open a proposal. Costs PROPOSAL_FEE SOL, paid into the agent's vault. */
   propose(agentId: string, field: VoteField, wallet: string, reason?: string): Promise<string>;
+  /** Rate a report card (👍/👎). Feeds "Rated by N holders". */
+  rate(reportId: string, up: boolean): Promise<void>;
   /** Launch the agent's coin on pump.fun and give it a wallet. Returns agent id. */
   hire(input: HireInput, wallet: string): Promise<string>;
 }

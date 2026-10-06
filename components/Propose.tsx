@@ -28,10 +28,10 @@ export function Modal({ children, onClose, title }: { children: React.ReactNode;
   );
 }
 
-export default function ProposeButton({ agent }: { agent: Agent }) {
+export default function ProposeButton({ agent, preset, label = "✎ Propose", className = "px-btn memo", reasonPreset = "" }: { agent: Agent; preset?: VoteField; label?: string; className?: string; reasonPreset?: string }) {
   const [open, setOpen] = useState(false);
-  const [field, setField] = useState<VoteField>("risk");
-  const [reason, setReason] = useState("");
+  const [field, setField] = useState<VoteField>(preset ?? "risk");
+  const [reason, setReason] = useState(reasonPreset);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const { address } = useMyWallet();
@@ -56,8 +56,8 @@ export default function ProposeButton({ agent }: { agent: Agent }) {
   if (agent.status !== "working" && agent.status !== "idle") return null;
   return (
     <>
-      <button className="px-btn memo" onClick={() => setOpen(true)}>
-        ✎ Propose
+      <button className={className} onClick={() => setOpen(true)}>
+        {label}
       </button>
       {open && (
         <Modal title={`Propose · $${agent.ticker}`} onClose={() => setOpen(false)}>
